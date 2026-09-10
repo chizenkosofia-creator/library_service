@@ -49,7 +49,9 @@ INSTALLED_APPS = [
     "drf_spectacular",
     "debug_toolbar",
     "user",
-    "library"
+    "library",
+    "payments",
+    "notifications",
 ]
 
 MIDDLEWARE = [
