@@ -1,19 +1,19 @@
 from rest_framework import viewsets, mixins, status
-from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.db import transaction
-from django.utils import timezone
 from notifications.tasks import send_notification_task
+from payments.models import Payment
+from payments.stripe_utils import create_stripe_session
 
-from .models import Book, Borrowing, Payment
+from .models import Book, Borrowing
 from .permissions import IsAdminOrReadOnly
 from .serializers import (
     BookSerializer,
     BorrowingSerializer,
     BorrowingDetailSerializer,
     BorrowingReturnSerializer,
-    PaymentSerializer, BookListSerializer, BookDetailSerializer,
+    BookListSerializer, BookDetailSerializer,
 )
 
 
@@ -30,86 +30,60 @@ class BookViewSet(viewsets.ModelViewSet):
 
 
 class BorrowingViewSet(
-    mixins.CreateModelMixin,
     mixins.ListModelMixin,
     mixins.RetrieveModelMixin,
+    mixins.CreateModelMixin,
     viewsets.GenericViewSet,
 ):
+    queryset = Borrowing.objects.select_related("book", "user")
     permission_classes = (IsAuthenticated,)
-
-    def get_queryset(self):
-        queryset = Borrowing.objects.select_related("book", "user").prefetch_related("payments")
-        user = self.request.user
-        if not user.is_staff:
-            queryset = queryset.filter(user=user)
-        user_id = self.request.query_params.get("user_id")
-        if user_id and user.is_staff:
-            queryset = queryset.filter(user_id=user_id)
-
-        is_active = self.request.query_params.get("is_active")
-        if is_active is not None:
-            if is_active.lower() == "true":
-                queryset = queryset.filter(actual_return_date__isnull=True)
-            elif is_active.lower() == "false":
-                queryset = queryset.filter(actual_return_date__isnull=False)
-
-        return queryset
 
     def get_serializer_class(self):
         if self.action == "retrieve":
             return BorrowingDetailSerializer
-        if self.action == "return_borrowing":
-            return BorrowingReturnSerializer
         return BorrowingSerializer
 
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user, borrow_date=timezone.now().date())
+    def create(self, request, *args, **kwargs):
+        # 1. Забороняємо створення оренди, якщо є непогашені платежі (PENDING)
+        has_pending_payments = Payment.objects.filter(
+            borrowing__user=request.user,
+            status=Payment.StatusChoices.PENDING
+        ).exists()
 
-    @action(detail=True, methods=["post"], url_path="return")
-    def return_borrowing(self, request, pk=None):
-        borrowing = self.get_object()
-
-        if borrowing.actual_return_date is not None:
+        if has_pending_payments:
             return Response(
-                {"error": "This borrowing has already been returned."},
+                {"error": "You have pending payments. Please pay them before borrowing new books."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
         with transaction.atomic():
-            borrowing.actual_return_date = timezone.now().date()
-            borrowing.save()
+            borrowing = serializer.save(user=request.user)
 
-            book = borrowing.book
-            book.inventory += 1
-            book.save()
+            session, price = create_stripe_session(borrowing, request)
 
-        serializer = self.get_serializer(borrowing)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    def perform_create(self, serializer):
-        borrowing = serializer.save(
-            user=self.request.user, borrow_date=timezone.now().date()
-        )
+            payment = Payment.objects.create(
+                status=Payment.StatusChoices.PENDING,
+                type=Payment.TypeChoices.PAYMENT,
+                borrowing=borrowing,
+                session_url=session.url,
+                session_id=session.id,
+                money_to_pay=price,
+            )
 
         message = (
             f"<b>📌 NEW BORROWING CREATED!</b>\n\n"
             f"<b>User:</b> {borrowing.user.email}\n"
             f"<b>Book:</b> {borrowing.book.title}\n"
-            f"<b>Expected Return:</b> {borrowing.expected_return_date}"
+            f"<b>Expected Return:</b> {borrowing.expected_return_date}\n"
+            f"<b>Pay here:</b> {payment.session_url}"
         )
         send_notification_task.delay(message)
 
+        response_data = serializer.data
+        response_data["payment_url"] = payment.session_url
 
-class PaymentViewSet(
-    mixins.ListModelMixin,
-    mixins.RetrieveModelMixin,
-    viewsets.GenericViewSet,
-):
-    permission_classes = (IsAuthenticated,)
-    serializer_class = PaymentSerializer
-
-    def get_queryset(self):
-        queryset = Payment.objects.select_related("borrowing")
-        if not self.request.user.is_staff:
-            return queryset.filter(borrowing__user=self.request.user)
-        return queryset
+        headers = self.get_success_headers(serializer.data)
+        return Response(response_data, status=status.HTTP_201_CREATED, headers=headers)
