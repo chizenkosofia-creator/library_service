@@ -2,7 +2,6 @@ import os
 import stripe
 from decimal import Decimal
 from django.urls import reverse
-from payments.models import Payment
 
 stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
 
@@ -13,8 +12,7 @@ def calculate_borrowing_price(borrowing) -> Decimal:
     return Decimal(days) * borrowing.book.daily_fee
 
 
-def create_stripe_session(borrowing, request, payment_type=Payment.TypeChoices.PAYMENT):
-    """Create Checkout Session in Stripe."""
+def create_stripe_session(borrowing, request, fine_amount=0):
     price = calculate_borrowing_price(borrowing)
     price_in_cents = int(price * 100)
 

@@ -10,7 +10,6 @@ def send_notification_task(message: str) -> None:
 
 @shared_task
 def check_overdue_borrowings() -> None:
-    """Щоденна перевірка прострочених оренд (Celery Beat)."""
     from library.models import Borrowing
 
     today = timezone.now().date()

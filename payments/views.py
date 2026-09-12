@@ -37,7 +37,7 @@ class PaymentViewSet(
             session_url=session.url,
             session_id=session.id,
             money_to_pay=price,
-            type=Payment.TypeChoices.PAYMENT,
+            payment_type=Payment.TypeChoices.PAYMENT,
         )
 
     @action(detail=False, methods=["get"], url_path="success")
@@ -89,7 +89,8 @@ class PaymentViewSet(
             {
                 "message": (
                     "Payment was cancelled or paused. "
-                    "The session remains active for 24 hours to complete the payment."
+                    "The session remains active for 24 "
+                    "hours to complete the payment."
                 )
             },
             status=status.HTTP_200_OK,
