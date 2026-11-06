@@ -1,0 +1,23 @@
+[flake8]
+exclude =
+    .git,
+    __pycache__,
+    venv,
+    .venv,
+    env,
+    ENV,
+    */migrations/*,
+    .idea,
+    .vscode,
+    build,
+    dist
+
+# Q000: Double quotes found but single quotes preferred
+# Q001: Single quotes found but double quotes preferred
+# Q002: Single quotes found but docstring preferred
+ignore =
+    Q000,
+    Q001,
+    Q002,
+    E501,
+    W503
